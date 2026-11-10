@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>外業現調 GIS 助手 (Field Survey Pro)</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- Leaflet CSS & JS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+  
+  <!-- shpjs: Parse Shapefile Zip -->
+  <script src="https://unpkg.com/shpjs@latest/dist/shp.js"></script>
+  
+  <!-- SheetJS: Export Excel -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  
+  <!-- JSZip & FileSaver: Package Photos into ZIP -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+
+  <style>
+    /* 確保地圖占滿螢幕 */
+    #map {
+      height: 100vh;
+      width: 100vw;
+      z-index: 1;
+    }
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 4px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 4px;
+    }
+    /* 鏡頭預覽蓋板 */
+    #camera-modal {
+      z-index: 9999;
+    }
+  </style>
+</head>
+<body class="bg-slate-900 text-slate-800 antialiased overflow-hidden select-none">
+
+  <!-- 主地圖區域 -->
+  <div id="map"></div>
+
+  <!-- 頂部標題與快速狀態欄 -->
+  <div class="absolute top-3 left-3 right-3 z-10 flex items-center justify-between pointer-events-none">
+    <div class="bg-slate-900/90 backdrop-blur-md text-white px-4 py-2.5 rounded-2xl shadow-lg border border-slate-700/50 flex items-center gap-3 pointer-events-auto">
+      <i class="fa-solid fa-map-location-dot text-emerald-400 text-xl"></i>
+      <div>
+        <h1 class="font-bold text-sm tracking-wide leading-none">外業現調 GIS 助手</h1>
+        <p id="gps-status" class="text-[11px] text-slate-400 mt-0.5">GPS: 尚未定位</p>
+      </div>
+    </div>
+
+    <!-- 右側選單切換與匯出按鈕 -->
+    <div class="flex gap-2 pointer-events-auto">
+      <button id="btn-export" onclick="openExportModal()" class="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-3.5 py-2.5 rounded-2xl shadow-lg flex items-center gap-2 text-xs transition active:scale-95">
+        <i class="fa-solid fa-file-export text-sm"></i>
+        <span class="hidden sm:inline">匯出資料</span>
+      </button>
+      <button id="btn-layers" onclick="toggleSidebar()" class="bg-slate-900/90 hover:bg-slate-800 text-white p-2.5 rounded-2xl shadow-lg border border-slate-700/50 transition active:scale-95">
+        <i class="fa-solid fa-layer-group text-base"></i>
+      </button>
+    </div>
+  </div>
+
+  <!-- 地圖懸浮功能按鈕 (右下角) -->
+  <div class="absolute bottom-6 right-4 z-10 flex flex-col gap-3">
+    <!-- 定位按鈕 -->
+    <button onclick="locateUser()" class="w-12 h-12 bg-white hover:bg-slate-100 text-slate-700 rounded-full shadow-xl border border-slate-200 flex items-center justify-center transition active:scale-90 text-lg">
+      <i class="fa-solid fa-crosshairs text-blue-600"></i>
+    </button>
+    <!-- 快捷新增隨機現調點 (當無SHP時) -->
+    <button onclick="createNewSurveyPoint()" class="w-12 h-12 bg-blue-600 hover:bg-blue-500 text-white rounded-full shadow-xl flex items-center justify-center transition active:scale-90 text-lg">
+      <i class="fa-solid fa-plus"></i>
+    </button>
+  </div>
+
+  <!-- 側邊欄 (圖層管理與 SHP 上傳) -->
+  <div id="sidebar" class="fixed inset-y-0 right-0 w-80 bg-white/95 backdrop-blur-md shadow-2xl z-20 transform translate-x-full transition-transform duration-300 ease-in-out flex flex-col border-l border-slate-200">
+    <div class="p-4 border-b border-slate-200 flex justify-between items-center bg-slate-50">
+      <h2 class="font-bold text-slate-800 flex items-center gap-2">
+        <i class="fa-solid fa-folder-open text-blue-600"></i>
+        圖層與 SHP 上傳
+      </h2>
+      <button onclick="toggleSidebar()" class="text-slate-400 hover:text-slate-600 p-1">
+        <i class="fa-solid fa-xmark text-lg"></i>
+      </button>
+    </div>
+
+    <div class="p-4 space-y-5 overflow-y-auto flex-1 custom-scrollbar">
+      <!-- 上傳 SHP ZIP 包 -->
+      <div>
+        <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">上傳 Shapefile (.zip)</label>
+        <div class="relative border-2 border-dashed border-slate-300 hover:border-blue-500 rounded-xl p-4 text-center cursor-pointer bg-slate-50/50 transition">
+          <input type="file" id="shp-file-input" accept=".zip" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer" onchange="handleShpUpload(event)">
+          <i class="fa-solid fa-cloud-arrow-up text-2xl text-slate-400 mb-1"></i>
+          <p class="text-xs text-slate-600 font-medium">點擊或拖曳包含 SHP 的 ZIP 檔</p>
+          <p class="text-[10px] text-slate-400 mt-1">需包含 .shp, .dbf, .prj</p>
+        </div>
+      </div>
+
+      <!-- 底圖選擇 -->
+      <div>
+        <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">底圖切換</label>
+        <div class="grid grid-cols-2 gap-2">
+          <button onclick="switchBaseMap('osm')" class="px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 flex items-center gap-2">
+            <i class="fa-solid fa-map text-emerald-500"></i> OpenStreetMap
+          </button>
+          <button onclick="switchBaseMap('google-sat')" class="px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 flex items-center gap-2">
+            <i class="fa-solid fa-earth-asia text-blue-500"></i> Google 衛星
+          </button>
+          <button onclick="switchBaseMap('google-road')" class="px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 flex items-center gap-2 col-span-2">
+            <i class="fa-solid fa-road text-amber-500"></i> Google 街道圖
+          </button>
+        </div>
+      </div>
+
+      <!-- 載入圖層列表 -->
+      <div>
+        <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">已載入圖層</label>
+        <div id="layer-list" class="space-y-2">
+          <p class="text-xs text-slate-400 italic">尚無載入圖層</p>
+        </div>
+      </div>
+
+      <!-- 統計資訊 -->
+      <div class="bg-slate-100 p-3 rounded-xl">
+        <p class="text-xs text-slate-500">現調記錄總數：<span id="record-count" class="font-bold text-slate-800">0</span> 筆</p>
+        <p class="text-xs text-slate-500 mt-1">總照片數量：<span id="photo-count" class="font-bold text-slate-800">0</span> 張</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 特徵/地點資訊抽屜 (點擊地圖物件後彈出) -->
+  <div id="feature-drawer" class="fixed inset-x-0 bottom-0 bg-white rounded-t-3xl shadow-2xl z-20 transform translate-y-full transition-transform duration-300 ease-in-out max-h-[85vh] flex flex-col border-t border-slate-200">
+    <div class="w-12 h-1.5 bg-slate-300 rounded-full mx-auto my-2.5"></div>
+    
+    <div class="px-5 pb-3 flex justify-between items-start border-b border-slate-100">
+      <div>
+        <span id="drawer-tag" class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 uppercase">目標點位</span>
+        <h3 id="drawer-title" class="text-lg font-bold text-slate-800 mt-0.5">未命名點位</h3>
+        <p id="drawer-coords" class="text-xs text-slate-400 font-mono">Lat: --, Lng: --</p>
+      </div>
+      <div class="flex gap-2">
+        <button id="btn-nav" onclick="startNavigation()" class="bg-blue-600 text-white px-3 py-1.5 rounded-xl text-xs font-medium flex items-center gap-1 shadow-md hover:bg-blue-500 transition">
+          <i class="fa-solid fa-diamond-turn-right text-sm"></i> 導航
+        </button>
+        <button onclick="closeDrawer()" class="text-slate-400 hover:text-slate-600 p-1">
+          <i class="fa-solid fa-xmark text-lg"></i>
+        </button>
+      </div>
+    </div>
+
+    <div class="p-5 overflow-y-auto space-y-4 flex-1 custom-scrollbar">
+      <!-- 距離定位提示 -->
+      <div id="distance-info" class="bg-blue-50 border border-blue-100 text-blue-800 p-2.5 rounded-xl text-xs flex items-center justify-between">
+        <span><i class="fa-solid fa-location-arrow text-blue-500 mr-1"></i>當前距離目標：</span>
+        <span id="distance-val" class="font-bold font-mono">計算中...</span>
+      </div>
+
+      <!-- 拍攝照片區塊 -->
+      <div>
+        <div class="flex justify-between items-center mb-2">
+          <label class="text-xs font-semibold text-slate-500 uppercase">照片記錄 (<span id="drawer-photo-count">0</span>)</label>
+          <button onclick="triggerPhotoWorkflow()" class="text-xs bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-xl font-medium flex items-center gap-1 shadow transition">
+            <i class="fa-solid fa-camera"></i> 拍攝照片
+          </button>
+        </div>
+        
+        <!-- 照片預覽縮圖網格 -->
+        <div id="drawer-photo-grid" class="grid grid-cols-3 gap-2 py-1">
+          <!-- 照片動態加入 -->
+        </div>
+      </div>
+
+      <!-- 現場筆記 / 備註 -->
+      <div>
+        <label class="block text-xs font-semibold text-slate-500 uppercase mb-1">現調筆記 / 備註</label>
+        <textarea id="drawer-notes" rows="3" onchange="saveCurrentNotes()" placeholder="在此輸入現場紀錄、現況說明..." class="w-full text-xs p-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none bg-slate-50"></textarea>
+      </div>
+
+      <!-- SHP 原始屬性資料 -->
+      <div>
+        <label class="block text-xs font-semibold text-slate-500 uppercase mb-1">SHP 屬性表 (Properties)</label>
+        <div id="drawer-attributes" class="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs space-y-1 font-mono max-h-36 overflow-y-auto">
+          <!-- 屬性表格化內容 -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 照片拍攝 & 確認 Modal (模擬連續拍攝流程) -->
+  <div id="camera-modal" class="fixed inset-0 bg-black/90 hidden flex-col justify-between p-4 z-50">
+    <div class="flex justify-between items-center text-white">
+      <span class="text-xs font-semibold tracking-wider">現調拍照模式</span>
+      <button onclick="closeCameraModal()" class="text-white hover:text-slate-300 p-2">
+        <i class="fa-solid fa-xmark text-2xl"></i>
+      </button>
+    </div>
+
+    <!-- 相機/檔案選擇觸發 -->
+    <div class="flex-1 flex flex-col items-center justify-center text-white p-4">
+      <div id="photo-preview-container" class="hidden w-full max-w-sm aspect-square bg-slate-800 rounded-2xl overflow-hidden border border-slate-700 shadow-2xl relative">
+        <img id="photo-preview" class="w-full h-full object-contain" src="" alt="拍攝預覽">
+      </div>
+      
+      <div id="photo-upload-prompt" class="text-center space-y-4">
+        <div class="w-20 h-20 bg-slate-800 rounded-full flex items-center justify-center mx-auto border border-slate-700 shadow-lg">
+          <i class="fa-solid fa-camera text-3xl text-emerald-400"></i>
+        </div>
+        <p class="text-sm text-slate-300">請拍攝現場照片或選擇檔案</p>
+        <input type="file" id="camera-input" accept="image/*" capture="environment" class="hidden" onchange="onPhotoCaptured(event)">
+        <button onclick="document.getElementById('camera-input').click()" class="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-6 py-3 rounded-2xl shadow-lg text-sm flex items-center gap-2 mx-auto transition active:scale-95">
+          <i class="fa-solid fa-aperture"></i> 開啟相機 / 選擇圖片
+        </button>
+      </div>
+    </div>
+
+    <!-- 拍攝後確認按鈕 (保存 Y / N) -->
+    <div id="photo-confirm-actions" class="hidden flex gap-3 pb-6 max-w-sm mx-auto w-full">
+      <button onclick="confirmPhotoSave(false)" class="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-medium py-3 rounded-xl text-sm transition">
+        重拍 / 放棄 (N)
+      </button>
+      <button onclick="confirmPhotoSave(true)" class="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-3 rounded-xl text-sm shadow-lg transition">
+        保存並繼續拍攝 (Y)
+      </button>
+    </div>
+  </div>
+
+  <!-- 匯出 modal -->
+  <div id="export-modal" class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden flex items-center justify-center p-4 z-40">
+    <div class="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl space-y-4">
+      <div class="flex justify-between items-center border-b border-slate-100 pb-3">
+        <h3 class="font-bold text-slate-800 text-base flex items-center gap-2">
+          <i class="fa-solid fa-file-export text-emerald-600"></i> 匯出調查資料
+        </h3>
+        <button onclick="closeExportModal()" class="text-slate-400 hover:text-slate-600">
+          <i class="fa-solid fa-xmark text-lg"></i>
+        </button>
+      </div>
+
+      <p class="text-xs text-slate-600 leading-relaxed">
+        系統將打包現調的 SHP 屬性欄位、拍攝的照片檔名、現場筆記與實測 GPS 座標。
+      </p>
+
+      <div class="space-y-2 pt-2">
+        <button onclick="exportExcel()" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-3 rounded-xl text-xs flex items-center justify-center gap-2 shadow-md transition">
+          <i class="fa-solid fa-file-excel text-base"></i> 匯出 Excel 清單 (.xlsx)
+        </button>
+        <button onclick="exportPhotosZip()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-medium py-3 rounded-xl text-xs flex items-center justify-center gap-2 shadow-md transition">
+          <i class="fa-solid fa-file-zipper text-base"></i> 匯出所有照片 ZIP (.zip)
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- JS 邏輯 -->
+  <script>
+    // 全域變數
+    let map;
+    let baseLayers = {};
+    let currentGeoJsonLayer = null;
+    let userLocation = null;
+    let userMarker = null;
+    let accuracyCircle = null;
+    
+    // 現調資料存儲 (Key: feature_id)
+    // Structure: { id, properties, geometry, notes, photos: [{name, dataUrl, timestamp}], surveyCoords: {lat, lng, alt, accuracy, timestamp} }
+    let surveyDataMap = {};
+    let activeFeatureId = null;
+    let tempCapturedPhoto = null; // 暫存待確認照片
+
+    // 初始化地圖
+    window.onload = function() {
+      initMap();
+      startGpsTracking();
+    };
+
+    function initMap() {
+      // 預設台北 101
+      map = L.map('map', { zoomControl: false }).setView([25.03397, 121.56447], 14);
+
+      // 準備圖層
+      baseLayers['osm'] = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '© OpenStreetMap'
+      });
+
+      baseLayers['google-sat'] = L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
+        maxZoom: 20,
+        attribution: '© Google Maps'
+      });
+
+      baseLayers['google-road'] = L.tileLayer('https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
+        maxZoom: 20,
+        attribution: '© Google Maps'
+      });
+
+      // 預設載入 OSM
+      baseLayers['osm'].addTo(map);
+
+      // 地圖點擊：若未點擊現有 Feature，亦可新增調查點
+      map.on('click', (e) => {
+        // 如果沒有點到現有圖層，詢問是否於此點建立新現調點
+      });
+    }
+
+    // 切換底圖
+    function switchBaseMap(type) {
+      Object.keys(baseLayers).forEach(key => map.removeLayer(baseLayers[key]));
+      if (baseLayers[type]) {
+        baseLayers[type].addTo(map);
+      }
+      toggleSidebar();
+    }
+
+    // GPS 定位與追蹤
+    function startGpsTracking() {
+      if ('geolocation' in navigator) {
+        navigator.geolocation.watchPosition(
+          (pos) => {
+            const { latitude, longitude, accuracy, altitude } = pos.coords;
+            userLocation = { lat: latitude, lng: longitude, alt: altitude || 0, accuracy };
+
+            document.getElementById('gps-status').innerText = `GPS: 精度 ±${Math.round(accuracy)}m`;
+
+            // 更新地圖上的使用者位置
+            if (!userMarker) {
+              userMarker = L.circleMarker([latitude, longitude], {
+                radius: 8,
+                fillColor: '#3b82f6',
+                color: '#ffffff',
+                weight: 3,
+                opacity: 1,
+                fillOpacity: 0.9
+              }).addTo(map);
+              
+              accuracyCircle = L.circle([latitude, longitude], {
+                radius: accuracy,
+                color: '#3b82f6',
+                weight: 1,
+                fillOpacity: 0.15
+              }).addTo(map);
+            } else {
+              userMarker.setLatLng([latitude, longitude]);
+              accuracyCircle.setLatLng([latitude, longitude]);
+              accuracyCircle.setRadius(accuracy);
+            }
+
+            // 更新當前抽屜內的距離計算
+            updateDistanceDisplay();
+          },
+          (err) => {
+            document.getElementById('gps-status').innerText = 'GPS: 無法取得定位';
+          },
+          { enableHighAccuracy: true, maximumAge: 10000, timeout: 5000 }
+        );
+      }
+    }
+
+    function locateUser() {
+      if (userLocation) {
+        map.flyTo([userLocation.lat, userLocation.lng], 17);
+      } else {
+        alert('正在取得 GPS 定位中，請確保已開啟定位權限...');
+      }
+    }
+
+    // 上傳與解析 SHP (ZIP)
+    async function handleShpUpload(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      try {
+        const buffer = await file.arrayBuffer();
+        const geojson = await shp(buffer);
+
+        // 清除舊圖層
+        if (currentGeoJsonLayer) {
+          map.removeLayer(currentGeoJsonLayer);
+        }
+
+        const layerListEl = document.getElementById('layer-list');
+        layerListEl.innerHTML = '';
+
+        // 載入 GeoJSON 到 Leaflet
+        const features = Array.isArray(geojson) ? geojson[0] : geojson;
+        
+        currentGeoJsonLayer = L.geoJSON(features, {
+          onEachFeature: (feature, layer) => {
+            // 為每個 Feature 生成獨一無二 ID
+            const id = 'feat_' + Math.random().toString(36).substr(2, 9);
+            feature.id = id;
+
+            // 初始化調查資料
+            surveyDataMap[id] = {
+              id: id,
+              properties: feature.properties || {},
+              geometry: feature.geometry,
+              notes: '',
+              photos: [],
+              surveyCoords: null
+            };
+
+            layer.on('click', (e) => {
+              L.DomEvent.stopPropagation(e);
+              openFeatureDrawer(id, e.latlng);
+            });
+          },
+          style: {
+            color: '#059669',
+            weight: 3,
+            opacity: 0.8,
+            fillColor: '#10b981',
+            fillOpacity: 0.3
+          },
+          pointToLayer: (feature, latlng) => {
+            return L.circleMarker(latlng, {
+              radius: 7,
+              fillColor: '#f59e0b',
+              color: '#ffffff',
+              weight: 2,
+              fillOpacity: 0.9
+            });
+          }
+        }).addTo(map);
+
+        // 縮放到圖層範圍
+        map.fitBounds(currentGeoJsonLayer.getBounds());
+
+        // 更新 UI 列表
+        const item = document.createElement('div');
+        item.className = 'p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs flex justify-between items-center';
+        item.innerHTML = `
+          <div class="truncate">
+            <p class="font-bold text-slate-700 truncate">${file.name}</p>
+            <p class="text-[10px] text-slate-400">${features.features.length} 個物件</p>
+          </div>
+          <i class="fa-solid fa-check text-emerald-500"></i>
+        `;
+        layerListEl.appendChild(item);
+
+        updateCounts();
+        toggleSidebar();
+
+      } catch (err) {
+        console.error(err);
+        alert('Shapefile 解析失敗，請確認 ZIP 檔內包含完整的 .shp, .dbf 與 .prj 檔案。');
+      }
+    }
+
+    // 隨機手動新增調查點 (若沒有 SHP)
+    function createNewSurveyPoint() {
+      const center = map.getCenter();
+      const id = 'manual_' + Math.random().toString(36).substr(2, 9);
+
+      surveyDataMap[id] = {
+        id: id,
+        properties: { 名稱: '自訂調查點 ' + Object.keys(surveyDataMap).length },
+        geometry: { type: 'Point', coordinates: [center.lng, center.lat] },
+        notes: '',
+        photos: [],
+        surveyCoords: null
+      };
+
+      const marker = L.marker(center, {
+        icon: L.divIcon({
+          className: 'custom-div-icon',
+          html: `<div style="background-color:#ef4444;width:16px;height:16px;border-radius:50%;border:2px solid white;box-shadow:0 2px 5px rgba(0,0,0,0.3);"></div>`,
+          iconSize: [16, 16],
+          iconAnchor: [8, 8]
+        })
+      }).addTo(map);
+
+      marker.on('click', () => {
+        openFeatureDrawer(id, center);
+      });
+
+      openFeatureDrawer(id, center);
+    }
+
+    // 開啟物件抽屜
+    function openFeatureDrawer(id, latlng) {
+      activeFeatureId = id;
+      const item = surveyDataMap[id];
+      if (!item) return;
+
+      // 紀錄現場點擊時的實測 GPS 座標
+      if (userLocation) {
+        item.surveyCoords = {
+          lat: userLocation.lat,
+          lng: userLocation.lng,
+          alt: userLocation.alt,
+          accuracy: userLocation.accuracy,
+          timestamp: new Date().toLocaleString('zh-TW')
+        };
+      }
+
+      document.getElementById('drawer-title').innerText = item.properties['Name'] || item.properties['名稱'] || item.properties['ID'] || id;
+      document.getElementById('drawer-coords').innerText = `Lat: ${latlng.lat.toFixed(6)}, Lng: ${latlng.lng.toFixed(6)}`;
+      document.getElementById('drawer-notes').value = item.notes || '';
+
+      // 渲染屬性表
+      const attrContainer = document.getElementById('drawer-attributes');
+      attrContainer.innerHTML = '';
+      if (Object.keys(item.properties).length > 0) {
+        Object.entries(item.properties).forEach(([k, v]) => {
+          const row = document.createElement('div');
+          row.className = 'flex justify-between border-b border-slate-100 pb-0.5';
+          row.innerHTML = `<span class="text-slate-500 font-semibold">${k}:</span> <span class="text-slate-800">${v}</span>`;
+          attrContainer.appendChild(row);
+        });
+      } else {
+        attrContainer.innerHTML = '<span class="text-slate-400 italic">無屬性資料</span>';
+      }
+
+      updateDrawerPhotos();
+      updateDistanceDisplay();
+
+      // 顯示 Drawer
+      document.getElementById('feature-drawer').classList.remove('translate-y-full');
+    }
+
+    function closeDrawer() {
+      document.getElementById('feature-drawer').classList.add('translate-y-full');
+      activeFeatureId = null;
+    }
+
+    // 導航功能 (開啟 Google Maps 導航)
+    function startNavigation() {
+      if (!activeFeatureId) return;
+      const item = surveyDataMap[activeFeatureId];
+      let lat, lng;
+
+      if (item.geometry.type === 'Point') {
+        lng = item.geometry.coordinates[0];
+        lat = item.geometry.coordinates[1];
+      } else {
+        // 多邊形/折線 取第一個點
+        const coords = item.geometry.coordinates[0];
+        lng = Array.isArray(coords[0]) ? coords[0][0] : coords[0];
+        lat = Array.isArray(coords[0]) ? coords[0][1] : coords[1];
+      }
+
+      const url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
+      window.open(url, '_blank');
+    }
+
+    // 計算當前位置到目標點的距離
+    function updateDistanceDisplay() {
+      if (!activeFeatureId || !userLocation) return;
+      const item = surveyDataMap[activeFeatureId];
+      let lat, lng;
+
+      if (item.geometry.type === 'Point') {
+        lng = item.geometry.coordinates[0];
+        lat = item.geometry.coordinates[1];
+      } else {
+        const coords = item.geometry.coordinates[0];
+        lng = Array.isArray(coords[0]) ? coords[0][0] : coords[0];
+        lat = Array.isArray(coords[0]) ? coords[0][1] : coords[1];
+      }
+
+      const from = L.latLng(userLocation.lat, userLocation.lng);
+      const to = L.latLng(lat, lng);
+      const dist = from.distanceTo(to); // 公尺
+
+      const distStr = dist > 1000 ? (dist / 1000).toFixed(2) + ' km' : Math.round(dist) + ' m';
+      document.getElementById('distance-val').innerText = distStr;
+    }
+
+    // 儲存現場筆記
+    function saveCurrentNotes() {
+      if (!activeFeatureId) return;
+      const notes = document.getElementById('drawer-notes').value;
+      surveyDataMap[activeFeatureId].notes = notes;
+    }
+
+    // 拍照工作流程 ----------------------------------------------
+    function triggerPhotoWorkflow() {
+      document.getElementById('camera-modal').classList.remove('hidden');
+      document.getElementById('camera-modal').classList.add('flex');
+      resetPhotoModalState();
+      
+      // 自動點擊相機輸入
+      setTimeout(() => {
+        document.getElementById('camera-input').click();
+      }, 300);
+    }
+
+    function resetPhotoModalState() {
+      tempCapturedPhoto = null;
+      document.getElementById('photo-preview-container').classList.add('hidden');
+      document.getElementById('photo-upload-prompt').classList.remove('hidden');
+      document.getElementById('photo-confirm-actions').classList.add('hidden');
+      document.getElementById('camera-input').value = '';
+    }
+
+    function onPhotoCaptured(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        tempCapturedPhoto = {
+          dataUrl: e.target.result,
+          timestamp: new Date().toISOString()
+        };
+
+        // 顯示預覽與確定面板 (Y/N)
+        document.getElementById('photo-preview').src = e.target.result;
+        document.getElementById('photo-preview-container').classList.remove('hidden');
+        document.getElementById('photo-upload-prompt').classList.add('hidden');
+        document.getElementById('photo-confirm-actions').classList.remove('hidden');
+        document.getElementById('photo-confirm-actions').classList.add('flex');
+      };
+      reader.readAsDataURL(file);
+    }
+
+    // 確認保存照片 (Y/N) 邏輯
+    function confirmPhotoSave(isSave) {
+      if (isSave && tempCapturedPhoto && activeFeatureId) {
+        const item = surveyDataMap[activeFeatureId];
+        const photoIndex = item.photos.length + 1;
+        const filename = `${activeFeatureId}_IMG_${photoIndex}.jpg`;
+
+        item.photos.push({
+          name: filename,
+          dataUrl: tempCapturedPhoto.dataUrl,
+          timestamp: new Date().toLocaleString('zh-TW')
+        });
+
+        updateDrawerPhotos();
+        updateCounts();
+      }
+
+      // 回到拍攝畫面，實現連續拍攝
+      resetPhotoModalState();
+      
+      // 詢問/自動觸發下一張拍攝
+      setTimeout(() => {
+        document.getElementById('camera-input').click();
+      }, 200);
+    }
+
+    function closeCameraModal() {
+      document.getElementById('camera-modal').classList.add('hidden');
+      document.getElementById('camera-modal').classList.remove('flex');
+      resetPhotoModalState();
+    }
+
+    // 更新抽屜內照片清單顯示
+    function updateDrawerPhotos() {
+      if (!activeFeatureId) return;
+      const item = surveyDataMap[activeFeatureId];
+      const grid = document.getElementById('drawer-photo-grid');
+      const countEl = document.getElementById('drawer-photo-count');
+      
+      countEl.innerText = item.photos.length;
+      grid.innerHTML = '';
+
+      item.photos.forEach((photo, idx) => {
+        const div = document.createElement('div');
+        div.className = 'relative aspect-square rounded-xl overflow-hidden border border-slate-200 shadow-sm group';
+        div.innerHTML = `
+          <img src="${photo.dataUrl}" class="w-full h-full object-cover">
+          <button onclick="deletePhoto(${idx})" class="absolute top-1 right-1 bg-red-600/80 text-white w-5 h-5 rounded-full flex items-center justify-center text-[10px]">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        `;
+        grid.appendChild(div);
+      });
+    }
+
+    function deletePhoto(idx) {
+      if (!activeFeatureId) return;
+      surveyDataMap[activeFeatureId].photos.splice(idx, 1);
+      updateDrawerPhotos();
+      updateCounts();
+    }
+
+    function updateCounts() {
+      const totalRecords = Object.keys(surveyDataMap).length;
+      let totalPhotos = 0;
+      Object.values(surveyDataMap).forEach(item => {
+        totalPhotos += item.photos.length;
+      });
+
+      document.getElementById('record-count').innerText = totalRecords;
+      document.getElementById('photo-count').innerText = totalPhotos;
+    }
+
+    // 側邊欄切換
+    function toggleSidebar() {
+      const sidebar = document.getElementById('sidebar');
+      sidebar.classList.toggle('translate-x-full');
+    }
+
+    // Modal 切換
+    function openExportModal() {
+      document.getElementById('export-modal').classList.remove('hidden');
+    }
+    function closeExportModal() {
+      document.getElementById('export-modal').classList.add('hidden');
+    }
+
+    // 匯出 Excel (XLSX) 功能
+    function exportExcel() {
+      const exportRows = [];
+
+      Object.values(surveyDataMap).forEach(item => {
+        // 匯出基礎屬性 + 現場資訊
+        const photoNames = item.photos.map(p => p.name).join(', ');
+        
+        const row = {
+          '物件編號 (ID)': item.id,
+          '現場備註/筆記': item.notes || '',
+          '拍攝照片檔名': photoNames,
+          '實測緯度 (Lat)': item.surveyCoords ? item.surveyCoords.lat : '',
+          '實測經度 (Lng)': item.surveyCoords ? item.surveyCoords.lng : '',
+          '高程 (m)': item.surveyCoords ? item.surveyCoords.alt : '',
+          'GPS精度 (m)': item.surveyCoords ? item.surveyCoords.accuracy : '',
+          '調查時間': item.surveyCoords ? item.surveyCoords.timestamp : '',
+          ...item.properties // 展開 SHP 原始屬性
+        };
+        exportRows.push(row);
+      });
+
+      if (exportRows.length === 0) {
+        alert('尚無可匯出的資料');
+        return;
+      }
+
+      const worksheet = XLSX.utils.json_to_sheet(exportRows);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, '現調紀錄');
+
+      const fileName = `Field_Survey_Export_${new Date().toISOString().slice(0,10)}.xlsx`;
+      XLSX.writeFile(workbook, fileName);
+    }
+
+    // 打包匯出所有照片 ZIP
+    async function exportPhotosZip() {
+      const zip = new JSZip();
+      const imgFolder = zip.folder("Survey_Photos");
+
+      let photoCount = 0;
+      Object.values(surveyDataMap).forEach(item => {
+        item.photos.forEach(photo => {
+          // base64 轉 binary
+          const base64Data = photo.dataUrl.replace(/^data:image\/(png|jpeg|jpg);base64,/, "");
+          imgFolder.file(photo.name, base64Data, { base64: true });
+          photoCount++;
+        });
+      });
+
+      if (photoCount === 0) {
+        alert('當前沒有拍攝任何照片可供匯出');
+        return;
+      }
+
+      const content = await zip.generateAsync({ type: "blob" });
+      saveAs(content, `Field_Photos_${new Date().toISOString().slice(0,10)}.zip`);
+    }
+  </script>
+</body>
+</html>
